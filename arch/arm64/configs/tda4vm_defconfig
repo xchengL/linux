@@ -1,0 +1,276 @@
+# =============================================================================
+# tda4vm_defconfig  -  TI TDA4VM (J721E) ARM64 Linux kernel
+#
+# 用途：
+#   - 目标板：TI TDA4VM / J721E (EVM: k3-j721e-common-proc-board.dts,
+#             SK: k3-j721e-sk.dts)
+#   - 启动方式：U-Boot 通过 TFTP 把 Image/dtb 下载到内存后引导内核
+#   - 根文件系统：rootfs.cpio 与内核【分开】，由 U-Boot 通过 TFTP 单独下载到
+#     内存，作为外部 initrd/ramdisk 传给内核(不编入 Image)
+#
+# 使用方法：
+#   # 1) 把本文件拷贝到内核源码的 configs 目录
+#   cp tda4vm_defconfig arch/arm64/configs/
+#   # 2) 生成 .config
+#   make ARCH=arm64 CROSS_COMPILE=aarch64-none-linux-gnu- tda4vm_defconfig
+#   # 3) 编译内核镜像 + 设备树(不包含 rootfs)
+#   make ARCH=arm64 CROSS_COMPILE=aarch64-none-linux-gnu- -j$(nproc) Image dtbs
+#   # 产物(三个文件各自独立)：
+#   #   arch/arm64/boot/Image
+#   #   arch/arm64/boot/dts/ti/k3-j721e-common-proc-board.dtb  (EVM)
+#   #   arch/arm64/boot/dts/ti/k3-j721e-sk.dtb                  (SK)
+#   #   rootfs.cpio                                            (你自己做的，单独)
+#
+# U-Boot 端(TFTP 分别加载 Image / dtb / rootfs.cpio，三个独立文件)：
+#   setenv ipaddr   192.168.1.100
+#   setenv serverip 192.168.1.10
+#   tftp 0x80080000 Image
+#   tftp 0x82000000 k3-j721e-common-proc-board.dtb
+#   tftp 0x84000000 rootfs.cpio          # rootfs 独立下载到内存
+#   setenv bootargs 'console=ttyS2,115200n8 rdinit=/sbin/init rw'
+#   # booti <kernel> <initrd 地址,大小> <dtb>  —— 第二个参数即 ramdisk
+#   booti 0x80080000 0x84000000:${filesize} 0x82000000
+#
+# 说明：
+#   1) 本配置【不内嵌】rootfs。CONFIG_INITRAMFS_SOURCE 保持为空，rootfs.cpio
+#      由 U-Boot 作为独立 initrd 下载到内存，再通过 booti 的第二个参数传给内核。
+#      - 若 cpio 已压缩(rootfs.cpio.gz/.xz 等)，内核会用下方 RD_* 选项自动解压。
+#      - U-Boot 若用 bootm，可把 rootfs.cpio 打成 uRamdisk(mkimage -T ramdisk)。
+#   2) TFTP 本身是 bootloader(U-Boot) 的功能，内核无需额外 TFTP 配置；
+#      这里保留了完整的 CPSW 网卡 + DP83867 PHY + IP 自动配置，方便内核
+#      起来后继续使用网络(NFS / DHCP 等)。
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 基础 / 通用内核特性
+# ---------------------------------------------------------------------------
+CONFIG_SYSVIPC=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_NO_HZ_IDLE=y
+CONFIG_HIGH_RES_TIMERS=y
+CONFIG_PREEMPT=y
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+CONFIG_MEMCG=y
+CONFIG_BLK_CGROUP=y
+CONFIG_CGROUP_PIDS=y
+CONFIG_CGROUP_FREEZER=y
+CONFIG_CPUSETS=y
+CONFIG_CGROUP_DEVICE=y
+CONFIG_CGROUP_CPUACCT=y
+CONFIG_USER_NS=y
+CONFIG_SCHED_AUTOGROUP=y
+CONFIG_KALLSYMS_ALL=y
+
+# ---------------------------------------------------------------------------
+# 平台选择：只保留 TI K3 (TDA4VM / J721E 所属系列)
+# ---------------------------------------------------------------------------
+CONFIG_ARCH_K3=y
+CONFIG_ARM64_VA_BITS_48=y
+CONFIG_SCHED_MC=y
+CONFIG_COMPAT=y
+
+# CPU 频率调节
+# CPU idle 框架 (ARM_PSCI_CPUIDLE 依赖它，否则被丢弃)
+CONFIG_CPU_IDLE=y
+CONFIG_ARM_PSCI_CPUIDLE=y
+CONFIG_CPU_FREQ=y
+CONFIG_CPU_FREQ_STAT=y
+CONFIG_CPU_FREQ_GOV_USERSPACE=y
+CONFIG_CPU_FREQ_GOV_ONDEMAND=y
+CONFIG_CPUFREQ_DT=y
+
+# 虚拟化(可选，K3 支持)
+CONFIG_VIRTUALIZATION=y
+
+# 模块支持
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+CONFIG_IOSCHED_BFQ=y
+
+# ---------------------------------------------------------------------------
+# 外部 initrd / ramdisk 支持 (rootfs.cpio 不编入内核，由 U-Boot 单独加载)
+# ---------------------------------------------------------------------------
+# 开启 initrd/initramfs 支持，使内核能接收 U-Boot 传入的外部 ramdisk。
+CONFIG_BLK_DEV_INITRD=y
+# 【关键】不内嵌 rootfs：INITRAMFS_SOURCE 留空，rootfs.cpio 保持独立文件，
+# 由 U-Boot 通过 TFTP 下载到内存后作为 initrd 传给内核。
+CONFIG_INITRAMFS_SOURCE=""
+# 支持常见压缩格式的 cpio(rootfs.cpio.gz / .xz 等)，内核会自动解压外部 ramdisk
+CONFIG_RD_GZIP=y
+CONFIG_RD_LZMA=y
+CONFIG_RD_XZ=y
+CONFIG_RD_LZO=y
+CONFIG_RD_LZ4=y
+CONFIG_RD_ZSTD=y
+# devtmpfs：自动创建 /dev 节点，ramdisk 启动必备
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
+# ---------------------------------------------------------------------------
+# 网络协议栈 (TFTP 后内核网络 / NFS / DHCP 等)
+# ---------------------------------------------------------------------------
+CONFIG_NET=y
+CONFIG_PACKET=y
+CONFIG_UNIX=y
+CONFIG_INET=y
+CONFIG_IP_MULTICAST=y
+# 内核态 IP 自动配置(DHCP / BOOTP)，配合 ip= 启动参数
+CONFIG_IP_PNP=y
+CONFIG_IP_PNP_DHCP=y
+CONFIG_IP_PNP_BOOTP=y
+CONFIG_IPV6=y
+
+# ---------------------------------------------------------------------------
+# 网卡：TI K3 CPSW 千兆以太网 + MDIO + DP83867 PHY (TDA4VM 板载网口)
+# ---------------------------------------------------------------------------
+CONFIG_NETDEVICES=y
+CONFIG_TI_K3_AM65_CPSW_NUSS=y
+CONFIG_MDIO_BUS_MUX=y
+CONFIG_PHYLIB=y
+CONFIG_DP83867_PHY=y
+CONFIG_DP83869_PHY=y
+
+# ---------------------------------------------------------------------------
+# TI SCI / 固件 / 时钟 / 复位 / 电源域 (K3 SoC 运行基础，缺一不可)
+# ---------------------------------------------------------------------------
+CONFIG_MAILBOX=y
+CONFIG_OMAP2PLUS_MBOX=y
+CONFIG_TI_MESSAGE_MANAGER=y
+CONFIG_TI_SCI_PROTOCOL=y
+CONFIG_TI_SCI_CLK=y
+# 【重要】reset 框架总开关。RESET_TI_SCI 依赖它；它是 menuconfig 符号，
+# default y 仅在 ARCH_HAS_RESET_CONTROLLER 被 select 时成立，精简 defconfig
+# 下不会自动开，必须显式写，否则 RESET_TI_SCI 会被静默丢弃，导致 K3 复位/
+# 中断聚合器(INTA)无法工作 -> ti-udma 申请 MSI 失败 -> 启动崩溃。
+CONFIG_RESET_CONTROLLER=y
+CONFIG_RESET_TI_SCI=y
+CONFIG_TI_SCI_PM_DOMAINS=y
+CONFIG_TI_SCI_INTA_IRQCHIP=y
+CONFIG_TI_SCI_INTR_IRQCHIP=y
+CONFIG_TI_K3_SOCINFO=y
+CONFIG_SOC_TI=y
+CONFIG_ARM_SMMU_V3=y
+
+# ---------------------------------------------------------------------------
+# DMA (K3 UDMA，CPSW / MMC / UART 等都依赖)
+# ---------------------------------------------------------------------------
+CONFIG_DMADEVICES=y
+CONFIG_TI_K3_UDMA=y
+CONFIG_TI_K3_UDMA_GLUE_LAYER=y
+
+# ---------------------------------------------------------------------------
+# 引脚 / GPIO
+# ---------------------------------------------------------------------------
+# 总开关：PINCTRL/GPIOLIB 是 SoC 引脚复用与 GPIO 的基础框架，
+# 下面各具体驱动都依赖它们，不显式开会导致子项被静默丢弃。
+CONFIG_PINCTRL=y
+CONFIG_GPIOLIB=y
+CONFIG_PINCTRL_SINGLE=y
+CONFIG_GPIO_DAVINCI=y
+CONFIG_GPIO_PCA953X=y
+CONFIG_GPIO_SYSCON=y
+
+# ---------------------------------------------------------------------------
+# 串口控制台：TDA4VM 使用 8250-OMAP (ttyS2 main UART)
+# ---------------------------------------------------------------------------
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_EXTENDED=y
+CONFIG_SERIAL_8250_SHARE_IRQ=y
+CONFIG_SERIAL_8250_DW=y
+CONFIG_SERIAL_8250_OMAP=y
+CONFIG_SERIAL_OF_PLATFORM=y
+
+# ---------------------------------------------------------------------------
+# I2C / SPI / PMIC / 稳压器 (板级外设与供电)
+# ---------------------------------------------------------------------------
+CONFIG_I2C=y
+CONFIG_I2C_CHARDEV=y
+CONFIG_I2C_MUX=y
+CONFIG_I2C_MUX_PCA954x=y
+CONFIG_I2C_OMAP=y
+CONFIG_SPI=y
+CONFIG_SPI_CADENCE_QUADSPI=y
+CONFIG_SPI_OMAP24XX=y
+CONFIG_SPI_SPIDEV=y
+CONFIG_MFD_TPS6594_I2C=y
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_FIXED_VOLTAGE=y
+CONFIG_REGULATOR_GPIO=y
+CONFIG_REGULATOR_TPS6594=y
+
+# ---------------------------------------------------------------------------
+# MMC / SD (eMMC + SD 卡)
+# ---------------------------------------------------------------------------
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_SDHCI=y
+CONFIG_MMC_SDHCI_PLTFM=y
+CONFIG_MMC_SDHCI_AM654=y
+
+# ---------------------------------------------------------------------------
+# USB (DWC3 host/device)
+# ---------------------------------------------------------------------------
+CONFIG_USB=y
+CONFIG_USB_XHCI_HCD=y
+# USB_STORAGE 依赖 SCSI 子系统，需显式开启 SCSI + 磁盘(sd)驱动
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_DWC3=y
+CONFIG_USB_CDNS_SUPPORT=y
+CONFIG_USB_CDNS3=y
+CONFIG_USB_CDNS3_HOST=y
+CONFIG_NOP_USB_XCEIV=y
+CONFIG_PHY_J721E_WIZ=y
+CONFIG_PHY_CADENCE_SIERRA=y
+CONFIG_PHY_CADENCE_TORRENT=y
+
+# ---------------------------------------------------------------------------
+# 看门狗 / RTC / 温度
+# ---------------------------------------------------------------------------
+CONFIG_WATCHDOG=y
+CONFIG_K3_RTI_WATCHDOG=y
+CONFIG_RTC_CLASS=y
+CONFIG_RTC_DRV_TI_K3=y
+CONFIG_THERMAL=y
+CONFIG_K3_THERMAL=y
+CONFIG_CPU_THERMAL=y
+
+# ---------------------------------------------------------------------------
+# 远程核 (R5F / C66x/C71x DSP，TDA4VM 多核特性，可选)
+# ---------------------------------------------------------------------------
+CONFIG_REMOTEPROC=y
+CONFIG_TI_K3_R5_REMOTEPROC=m
+CONFIG_TI_K3_DSP_REMOTEPROC=m
+CONFIG_RPMSG_CHAR=m
+CONFIG_RPMSG_CTRL=m
+CONFIG_RPMSG_VIRTIO=y
+
+# ---------------------------------------------------------------------------
+# 文件系统
+# ---------------------------------------------------------------------------
+CONFIG_EXT2_FS=y
+CONFIG_EXT3_FS=y
+CONFIG_EXT4_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+CONFIG_OVERLAY_FS=y
+CONFIG_CONFIGFS_FS=y
+CONFIG_SQUASHFS=y
+# 若以后改用 NFS 根文件系统，可用这些选项(当前用 cpio，默认不走 NFS root)
+CONFIG_NFS_FS=y
+CONFIG_NFS_V4=y
+CONFIG_ROOT_NFS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+
+# ---------------------------------------------------------------------------
+# 调试辅助
+# ---------------------------------------------------------------------------
+CONFIG_PRINTK_TIME=y
+CONFIG_MAGIC_SYSRQ=y
+CONFIG_DEBUG_FS=y
+CONFIG_DEBUG_KERNEL=y
